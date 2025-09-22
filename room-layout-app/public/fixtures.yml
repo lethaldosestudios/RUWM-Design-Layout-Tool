@@ -1,0 +1,21 @@
+- id: 1
+  name: Toilet
+  width: 50
+  height: 50
+  clearance:
+    front: 100
+    back: 20
+    sides: 30
+- id: 2
+  name: Sink
+  width: 60
+  height: 40
+  clearance:
+    front: 80
+    sides: 20
+- id: 3
+  name: Door
+  width: 80
+  height: 10
+  clearance:
+    swing: 100
