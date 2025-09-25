@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useImperativeHandle, forwardRef } from 'react';
-import { Stage, Layer, Rect, Transformer, Group } from 'react-konva';
+import { Stage, Layer, Rect, Transformer, Group, Line, Arc } from 'react-konva';
 import Konva from 'konva';
 
 /**
@@ -22,58 +22,71 @@ const haveIntersection = (r1, r2) => {
  * The zones are color-coded based on whether they intersect with other fixtures.
  */
 const ClearanceZone = ({ fixture, allFixtures }) => {
-    const clearance = fixture.clearance;
-    if (!clearance) return null;
+    const clearanceRules = fixture.clearance;
+    if (!clearanceRules || clearanceRules.length === 0) return null;
 
-    /**
-     * Calculates the clearance zones and checks for collisions.
-     * @returns {Array} - An array of shape properties for the clearance zones.
-     */
     const getClearanceShapes = () => {
       const shapes = [];
-      const addZone = (key, config) => {
-        // Create a temporary group to calculate the world position of the clearance zone.
-        const group = new Konva.Group({
-            x: fixture.x,
-            y: fixture.y,
-            rotation: fixture.rotation,
-        });
-        group.add(new Konva.Rect(config));
-        const worldRect = group.getClientRect();
 
-        // Check for intersection with all other fixtures.
-        const isViolating = allFixtures.some(f => {
-            if (f.id === fixture.id) return false;
-            const otherFixtureNode = new Konva.Rect(f);
-            const otherFixtureBox = otherFixtureNode.getClientRect();
-            return haveIntersection(worldRect, otherFixtureBox);
-        });
+      clearanceRules.forEach((rule, index) => {
+        let configs = [];
 
-        shapes.push({
-            ...config,
-            key,
-            fill: isViolating ? 'rgba(255, 0, 0, 0.3)' : 'rgba(0, 255, 0, 0.3)',
-        });
-      };
+        switch (rule.type) {
+          case 'front':
+            configs.push({ x: 0, y: -rule.distance, width: fixture.width, height: rule.distance });
+            break;
+          case 'side':
+            configs.push({ x: -rule.distance, y: 0, width: rule.distance, height: fixture.height });
+            configs.push({ x: fixture.width, y: 0, width: rule.distance, height: fixture.height });
+            break;
+          case 'swing':
+            configs.push({ x: 0, y: 0, innerRadius: 0, outerRadius: rule.distance, angle: 90, shape: 'arc' });
+            break;
+          default:
+            return;
+        }
 
-      // Add clearance zones based on the fixture's configuration.
-      if (clearance.front) {
-        addZone('front', { x: -clearance.front, y: 0, width: fixture.width + clearance.front * 2, height: fixture.height });
-      }
-      if (clearance.sides) {
-        addZone('sides', { x: -clearance.sides, y: 0, width: fixture.width + clearance.sides * 2, height: fixture.height });
-      }
-      if (clearance.back) {
-        addZone('back', { x: 0, y: fixture.height, width: fixture.width, height: clearance.back });
-      }
+        configs.forEach((config, i) => {
+            const zoneShape = config.shape === 'arc' ? new Konva.Arc(config) : new Konva.Rect(config);
+
+            const group = new Konva.Group({
+                x: fixture.x,
+                y: fixture.y,
+                rotation: fixture.rotation,
+            });
+            group.add(zoneShape);
+            const worldRect = group.getClientRect();
+
+            const isViolating = allFixtures.some(f => {
+                if (f.id === fixture.id) return false;
+                const otherFixtureNode = new Konva.Rect(f);
+                const otherFixtureBox = otherFixtureNode.getClientRect();
+                return haveIntersection(worldRect, otherFixtureBox);
+            });
+
+            shapes.push({
+                key: `${fixture.id}-clearance-${index}-${i}`,
+                shape: config.shape || 'rect',
+                config,
+                fill: isViolating ? 'rgba(255, 0, 0, 0.3)' : 'rgba(0, 255, 0, 0.3)',
+            });
+        });
+      });
 
       return shapes;
     };
 
-    // The clearance zones are rendered in a group that is transformed with the fixture.
     return (
-      <Group x={fixture.x} y={fixture.y} rotation={fixture.rotation} >
-        {getClearanceShapes().map(shape => <Rect {...shape} />)}
+      <Group x={fixture.x} y={fixture.y} rotation={fixture.rotation}>
+        {getClearanceShapes().map(shapeInfo => {
+          if (shapeInfo.shape === 'rect') {
+            return <Rect key={shapeInfo.key} {...shapeInfo.config} fill={shapeInfo.fill} />;
+          }
+          if (shapeInfo.shape === 'arc') {
+            return <Arc key={shapeInfo.key} {...shapeInfo.config} fill={shapeInfo.fill} />;
+          }
+          return null;
+        })}
       </Group>
     );
   };
@@ -83,7 +96,7 @@ const ClearanceZone = ({ fixture, allFixtures }) => {
  * It can be selected, moved, rotated, and resized.
  * When selected, it also renders its clearance zones.
  */
-const FixtureComponent = ({ shapeProps, isSelected, onSelect, onChange, allFixtures }) => {
+const FixtureComponent = ({ shapeProps, isSelected, onSelect, onChange, allFixtures, snapToGrid, gridSize }) => {
   const shapeRef = useRef();
   const trRef = useRef();
 
@@ -94,6 +107,16 @@ const FixtureComponent = ({ shapeProps, isSelected, onSelect, onChange, allFixtu
     }
   }, [isSelected]);
 
+  const handleDragEnd = (e) => {
+    let newX = e.target.x();
+    let newY = e.target.y();
+    if (snapToGrid) {
+        newX = Math.round(newX / gridSize) * gridSize;
+        newY = Math.round(newY / gridSize) * gridSize;
+    }
+    onChange({ ...shapeProps, x: newX, y: newY });
+  };
+
   return (
     <Group>
         {isSelected && <ClearanceZone fixture={shapeProps} allFixtures={allFixtures} />}
@@ -103,9 +126,7 @@ const FixtureComponent = ({ shapeProps, isSelected, onSelect, onChange, allFixtu
             ref={shapeRef}
             {...shapeProps}
             draggable
-            onDragEnd={(e) => {
-            onChange({ ...shapeProps, x: e.target.x(), y: e.target.y() });
-            }}
+            onDragEnd={handleDragEnd}
             onTransformEnd={(e) => {
             const node = shapeRef.current;
             const scaleX = node.scaleX();
@@ -137,11 +158,38 @@ const FixtureComponent = ({ shapeProps, isSelected, onSelect, onChange, allFixtu
   );
 };
 
+const GridLayer = ({ width, height, gridSize }) => {
+    const lines = [];
+    // Draw vertical lines
+    for (let i = 0; i < width / gridSize; i++) {
+      lines.push(
+        <Line
+          key={`v-${i}`}
+          points={[Math.round(i * gridSize) + 0.5, 0, Math.round(i * gridSize) + 0.5, height]}
+          stroke="#ddd"
+          strokeWidth={1}
+        />
+      );
+    }
+    // Draw horizontal lines
+    for (let j = 0; j < height / gridSize; j++) {
+      lines.push(
+        <Line
+          key={`h-${j}`}
+          points={[0, Math.round(j * gridSize), width, Math.round(j * gridSize)]}
+          stroke="#ddd"
+          strokeWidth={1}
+        />
+      );
+    }
+    return <Layer>{lines}</Layer>;
+  };
+
 /**
  * The main canvas component where the room layout is drawn.
  * It handles drag and drop of fixtures, selection, and rendering of all elements.
  */
-const Canvas = forwardRef(({ width, height, fixtures, onDrop, onUpdateFixture }, ref) => {
+const Canvas = forwardRef(({ width, height, fixtures, onDrop, onUpdateFixture, showGrid, snapToGrid, gridSize }, ref) => {
     const [selectedId, selectShape] = useState(null);
     const stageRef = useRef();
 
@@ -160,8 +208,15 @@ const Canvas = forwardRef(({ width, height, fixtures, onDrop, onUpdateFixture },
     const handleDrop = (e) => {
       e.preventDefault();
       stageRef.current.setPointersPositions(e);
-      const fixture = JSON.parse(e.dataTransfer.getData('text/plain'));
-      onDrop(fixture, stageRef.current.getPointerPosition().x, stageRef.current.getPointerPosition().y);
+      let fixture = JSON.parse(e.dataTransfer.getData('text/plain'));
+      let { x, y } = stageRef.current.getPointerPosition();
+
+      if (snapToGrid) {
+          x = Math.round(x / gridSize) * gridSize;
+          y = Math.round(y / gridSize) * gridSize;
+      }
+
+      onDrop(fixture, x, y);
     };
 
     return (
@@ -177,6 +232,7 @@ const Canvas = forwardRef(({ width, height, fixtures, onDrop, onUpdateFixture },
           onMouseDown={checkDeselect}
           onTouchStart={checkDeselect}
         >
+          {showGrid && <GridLayer width={width} height={height} gridSize={gridSize} />}
           <Layer>
             <Rect x={0} y={0} width={width} height={height} fill="white" />
             {fixtures.map((fixture) => (
@@ -191,6 +247,8 @@ const Canvas = forwardRef(({ width, height, fixtures, onDrop, onUpdateFixture },
                   onUpdateFixture(fixture.id, newAttrs);
                 }}
                 allFixtures={fixtures}
+                snapToGrid={snapToGrid}
+                gridSize={gridSize}
               />
             ))}
           </Layer>
